@@ -43,13 +43,15 @@ Push to GitHub, import into Vercel, add the three environment variables above in
 
 ## User flow
 
-1. **Landing** — value prop + "Build my resume."
+1. **Landing** — value prop + "Pause my resume."
 2. **Template** — pick Classic / Modern / Minimal (changeable again later, right up to export).
 3. **Target role** — free text box: job title, short description, or a full pasted job description.
 4. **Profile import** — upload a LinkedIn "Save to PDF" export, paste profile text, or (last resort) fill in a compact manual-entry form. A demo profile is also one click away.
 5. **Extraction + tailoring** (`AIService.extractProfile` → `AIService.tailorResume`) — a loading screen runs while both real API calls happen; it never signals "done" before the actual work finishes.
 6. **Review & edit** — a single unified, fully editable "sheet," with a small badge per field showing where it came from (from your profile / AI-tailored / add your own). Edits autosave to the `resumes` row.
-7. **Preview & export** — renders the *actual* generated PDF in an iframe (not an approximation) before you download, so what you see is exactly what you get. Switch templates here too — the preview regenerates automatically. PDF and DOCX both come from the same `TailoredResume` object.
+7. **Score** — job-specific 0-100 score against the target role, with an "Improve My Score" action that walks through each rewrite before applying it.
+8. **Interview prep** — likely questions grounded in what's actually on the resume, each with a tip.
+9. **Preview & export** — renders the *actual* generated PDF in an iframe (not an approximation) before you download, so what you see is exactly what you get. An optional, dismissible prompt offers to save the resume to an account (see "Optional accounts" below) — declining it doesn't block the download.
 
 ## Architecture
 
@@ -105,16 +107,31 @@ Both call Claude with a system prompt demanding **strict JSON only** (no prose, 
 - Tailoring also returns `missingForRole`: a short list of things the target role likely wants that the source profile doesn't support. This is shown to the user on the review screen instead of the AI papering over the gap.
 - The review screen carries a visible disclaimer that AI-generated content should be checked before use.
 
+## Optional accounts
+
+Auth is entirely opt-in — nobody is ever required to sign in to build, edit, score, or download a resume. Every guest action is keyed to an anonymous per-browser `session_id` (`lib/supabase.ts` → `getOrCreateSessionId`), which is what all guest-created `career_profiles`/`resumes` rows are tagged with.
+
+If someone chooses to sign in — the prompt only appears once, on the export screen, and is dismissible (`components/genforge/save-account-prompt.tsx`) — it's a passwordless email magic link via Supabase Auth (`sendMagicLink` in `lib/supabase.ts`). The moment they're signed in:
+
+- Any resumes already built in that browser session get "claimed" onto their account (`POST /api/claim-resumes` sets `user_id` on any of their `session_id`-matched rows that don't have one yet).
+- Any *new* resumes they tailor while signed in get attached immediately too, rather than waiting for another claim pass.
+- A **"My resumes"** link appears in the header, opening a dashboard (`components/genforge/my-resumes.tsx` + `GET /api/my-resumes`) listing every saved resume — one per target role — with a click-to-reopen that drops them back into the Review step with that resume loaded.
+
+The API routes are the actual security boundary here (`getUserFromAuthHeader` in `lib/supabase.ts` validates the bearer token server-side before returning anything) — RLS on the tables is left permissive on purpose, matching the rest of the schema's demo-mode posture; see the note in `supabase/schema.sql` if you take this past a demo.
+
+**Supabase setup for this to work:** in your Supabase project, go to Authentication → Providers and make sure Email is enabled (magic link works out of the box with it — no separate SMTP config needed for testing, Supabase sends it for you on the free tier). No new environment variables beyond the three you already set up are required.
+
 ## Key design decisions
 
 - **Single-page wizard instead of separate routes.** State (target role, profile id, resume id, the resume object itself) lives in one React component and is passed straight into each step and into the export calls. This avoids cross-page state-passing complexity and keeps the "upload → tailored resume" path fast for a judge to click through.
 - **Extraction and tailoring are separate AI calls and separate DB writes.** This was a hard requirement in the brief (`career_profiles` stores the raw profile; `resumes` stores tailored output) so a profile can be re-tailored for a second role later without re-uploading.
 - **PDF and DOCX render from one shared object**, never two independently-maintained templates, so they can't visually diverge.
 - **Manual entry bypasses the AI extraction step entirely** — it writes a `RawProfile` directly — since there's no unstructured text to extract from in that path.
+- **Auth is additive, not foundational.** The whole app was built guest-first; accounts were layered on top via a `session_id` → `user_id` claim step rather than requiring a signed-in user_id everywhere from the start, so the "never forced to sign up" requirement holds structurally, not just as a UI choice.
 
 ## Out of scope for this build (per the brief)
 
-Multiple resume personas, version history/comparison, ATS keyword simulator, career gap detector, career story generator, advanced animations, real user accounts/auth.
+Multiple resume personas, version history/comparison, ATS keyword simulator, career gap detector, career story generator, advanced animations.
 
 ## Known limitations / next steps
 

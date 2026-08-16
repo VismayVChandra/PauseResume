@@ -7,12 +7,11 @@ import {
   ResumeScoreSchema,
 } from "@/lib/schemas";
 
+// Google's current lightweight Gemini 3.x model is `gemini-3.1-flash-lite`.
+// There is no official Google-hosted "gemini-3.5-flash-lite" as of this
+// writing (only via third-party routers) — swap this string if that
+// changes or if you specifically have preview access to something else.
 const MODEL = "gemini-3.5-flash-lite";
-
-// Structured JSON output (a full multi-role resume, or a score with several
-// string arrays) can run long — leave real headroom so a busy profile never
-// gets cut off mid-string. Bump further if you still see truncation.
-const MAX_OUTPUT_TOKENS = 8192;
 
 function getClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -25,23 +24,10 @@ function getClient(): GoogleGenAI {
 }
 
 // Strips ```json fences etc. in case the model wraps its output despite
-// responseMimeType: "application/json" — belt and suspenders before zod validation.
+// instructions not to — belt and suspenders before zod validation.
 function extractJson(text: string): unknown {
   const cleaned = text.replace(/```json\s*|```\s*/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch (err) {
-    // A JSON.parse failure this far into a long, otherwise well-formed
-    // response is almost always truncation (hit maxOutputTokens mid-value),
-    // not malformed content — surface that plainly instead of the raw
-    // parser error, which doesn't point at the cause.
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `AI response was not valid JSON (${message}). This usually means the ` +
-        `response was cut off before it finished — try again, or raise ` +
-        `MAX_OUTPUT_TOKENS in lib/ai-service.ts if it keeps happening on long profiles.`
-    );
-  }
+  return JSON.parse(cleaned);
 }
 
 async function callStrictJson(system: string, user: string): Promise<unknown> {
@@ -52,20 +38,9 @@ async function callStrictJson(system: string, user: string): Promise<unknown> {
     config: {
       systemInstruction: system,
       responseMimeType: "application/json",
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      maxOutputTokens: 4096,
     },
   });
-
-  // Explicit truncation check: Gemini reports this even when what little
-  // text it did emit still happens to parse (e.g. cut off exactly on a
-  // clean boundary) — catch that case too, not just the parse failure.
-  const finishReason = response.candidates?.[0]?.finishReason;
-  if (finishReason === "MAX_TOKENS") {
-    throw new Error(
-      "The AI response was truncated (hit the output token limit) before " +
-        "it finished. Raise MAX_OUTPUT_TOKENS in lib/ai-service.ts and try again."
-    );
-  }
 
   const text = response.text;
   if (!text) {

@@ -8,15 +8,16 @@ export const runtime = "nodejs";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { careerProfileId, targetRole, templateId } = body as {
+    const { careerProfileId, targetRole, templateId, sessionId } = body as {
       careerProfileId: string;
       targetRole: string;
       templateId?: "classic" | "modern" | "minimal";
+      sessionId: string;
     };
 
-    if (!careerProfileId || !targetRole) {
+    if (!careerProfileId || !targetRole || !sessionId) {
       return NextResponse.json(
-        { error: "careerProfileId and targetRole are required." },
+        { error: "careerProfileId, targetRole, and sessionId are required." },
         { status: 400 }
       );
     }
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
       .from("resumes")
       .insert({
         career_profile_id: careerProfileId,
+        session_id: sessionId,
         target_role: targetRole,
         resume_json: tailored,
       })

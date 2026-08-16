@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { User } from "@supabase/supabase-js";
 import { PauseResumeWordmark } from "@/components/genforge/logo";
 import { ProgressStepper } from "@/components/genforge/progress-stepper";
 import { Landing } from "@/components/genforge/landing";
@@ -12,10 +13,12 @@ import { ReviewForm } from "@/components/ReviewForm";
 import { ScoreStep } from "@/components/ScoreStep";
 import { InterviewStep } from "@/components/InterviewStep";
 import { ExportStep } from "@/components/ExportStep";
+import { MyResumesView, SavedResumeSummary } from "@/components/genforge/my-resumes";
+import { SaveAccountPrompt } from "@/components/genforge/save-account-prompt";
 import { RawProfile, TailoredResume, TemplateId } from "@/types/resume";
-import { getOrCreateSessionId } from "@/lib/supabase";
+import { getOrCreateSessionId, supabaseBrowser, getAccessToken, signOut } from "@/lib/supabase";
 
-type Stage = "landing" | "flow";
+type Stage = "landing" | "flow" | "dashboard";
 type Step =
   | "template"
   | "target-role"
@@ -49,7 +52,44 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
 
+  // Optional auth — entirely separate from the resume-building flow above.
+  // A person can go through the whole app and download without ever
+  // touching this. Signing in only ever happens if they choose to.
+  const [user, setUser] = useState<User | null>(null);
+  const [savePromptDismissed, setSavePromptDismissed] = useState(false);
+
   const sessionId = typeof window !== "undefined" ? getOrCreateSessionId() : "server";
+
+  // Sweeps any guest-built resumes (matched by sessionId) onto the now
+  // signed-in account. Safe to call repeatedly — it only ever claims rows
+  // that don't already have a user_id.
+  const claimGuestResumes = useCallback(async () => {
+    const token = await getAccessToken();
+    if (!token) return;
+    try {
+      await fetch("/api/claim-resumes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ sessionId }),
+      });
+    } catch {
+      // best-effort — a failed claim just means this resume stays a guest
+      // resume for now; nothing in the current flow depends on it.
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    const supabase = supabaseBrowser();
+    supabase.auth.getUser().then(({ data }) => setUser(data.user ?? null));
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null);
+      if (event === "SIGNED_IN") {
+        claimGuestResumes();
+      }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [claimGuestResumes]);
 
   const runExtractionAndTailoring = useCallback(
     async (opts: { formData?: FormData; text?: string; manualProfile?: RawProfile; demo?: boolean }) => {
@@ -93,7 +133,12 @@ export default function Home() {
         const tailorRes = await fetch("/api/tailor-resume", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ careerProfileId: careerProfileIdLocal, targetRole, templateId }),
+          body: JSON.stringify({
+            careerProfileId: careerProfileIdLocal,
+            targetRole,
+            templateId,
+            sessionId,
+          }),
         });
         const tailorJson = await tailorRes.json();
         if (!tailorRes.ok) throw new Error(tailorJson.error || "Tailoring failed.");
@@ -101,12 +146,16 @@ export default function Home() {
         setResumeId(tailorJson.resumeId);
         setResume(tailorJson.resume);
         setReady(true);
+
+        // Already signed in? Attach this brand-new resume to the account
+        // right away instead of waiting for the next SIGNED_IN event.
+        if (user) claimGuestResumes();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Something went wrong.");
         setStep("upload");
       }
     },
-    [targetRole, templateId, sessionId]
+    [targetRole, templateId, sessionId, user, claimGuestResumes]
   );
 
   async function handleSubmitFile(file: File) {
@@ -131,6 +180,35 @@ export default function Home() {
     }
   }
 
+  async function openSavedResume(summary: SavedResumeSummary) {
+    setError(null);
+    try {
+      const res = await fetch(`/api/resumes/${summary.resumeId}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Couldn't open that resume.");
+      setResumeId(json.resumeId);
+      setResume(json.resume);
+      setCareerProfileId(summary.careerProfileId);
+      setTemplateId(json.resume.templateId);
+      setTargetRole(json.resume.targetRole);
+      setStage("flow");
+      setStep("review");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't open that resume.");
+    }
+  }
+
+  function startNewResume() {
+    setCareerProfileId(null);
+    setResumeId(null);
+    setResume(null);
+    setTargetRole("");
+    setTemplateId("classic");
+    setError(null);
+    setStage("flow");
+    setStep("template");
+  }
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-20 border-b border-border/70 bg-background/85 backdrop-blur">
@@ -152,12 +230,31 @@ export default function Home() {
             </div>
           )}
 
-          <div className="w-[104px] shrink-0 text-right">
+          <div className="flex shrink-0 items-center gap-3">
             {stage === "flow" && step !== "extracting" && (
-              <span className="font-mono text-xs text-muted-foreground">
+              <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
                 {String(STEP_NUMBER[step]).padStart(2, "0")} / 07
               </span>
             )}
+            {user ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setStage("dashboard")}
+                  className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-brand"
+                >
+                  My resumes
+                </button>
+                <button
+                  onClick={async () => {
+                    await signOut();
+                    setStage("landing");
+                  }}
+                  className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       </header>
@@ -170,6 +267,12 @@ export default function Home() {
               setStep("template");
             }}
           />
+        )}
+
+        {stage === "dashboard" && (
+          <div className="mx-auto max-w-6xl px-6">
+            <MyResumesView onOpen={openSavedResume} onNew={startNewResume} />
+          </div>
         )}
 
         {stage === "flow" && (
@@ -248,11 +351,18 @@ export default function Home() {
             )}
 
             {step === "export" && resume && (
-              <ExportStep
-                resume={resume}
-                onChangeTemplate={(id) => saveEdits({ ...resume, templateId: id })}
-                onBack={() => setStep("interview")}
-              />
+              <>
+                {!user && !savePromptDismissed && (
+                  <div className="mb-6">
+                    <SaveAccountPrompt onDismiss={() => setSavePromptDismissed(true)} />
+                  </div>
+                )}
+                <ExportStep
+                  resume={resume}
+                  onChangeTemplate={(id) => saveEdits({ ...resume, templateId: id })}
+                  onBack={() => setStep("interview")}
+                />
+              </>
             )}
           </div>
         )}
