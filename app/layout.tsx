@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Fraunces, JetBrains_Mono } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
@@ -31,7 +32,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       className={`${inter.variable} ${fraunces.variable} ${jetbrainsMono.variable} bg-background`}
     >
-      <body className="min-h-screen font-sans antialiased">{children}</body>
+      <body className="min-h-screen font-sans antialiased">
+        {children}
+        <Analytics />
+      </body>
     </html>
   );
 }
