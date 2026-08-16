@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { renderToBuffer } from "@react-pdf/renderer";
+import { renderToBuffer, DocumentProps } from "@react-pdf/renderer";
 import React from "react";
 import { ResumePdfDocument } from "@/lib/pdf-template";
 import { TailoredResumeSchema } from "@/lib/schemas";
@@ -18,7 +18,9 @@ export async function POST(req: NextRequest) {
     }
 
     const buffer = await renderToBuffer(
-      React.createElement(ResumePdfDocument, { resume: parsed.data })
+      React.createElement(ResumePdfDocument, {
+        resume: parsed.data,
+      }) as React.ReactElement<DocumentProps>
     );
 
     const fileName = `${parsed.data.fullName.replace(/\s+/g, "_") || "resume"}.pdf`;
